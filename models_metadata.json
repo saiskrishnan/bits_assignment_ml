@@ -1,0 +1,32 @@
+[
+  {
+    "model": "Logistic Regression",
+    "file": "model\\logistic_regression.joblib",
+    "accuracy": 0.8747044917257684
+  },
+  {
+    "model": "Decision Tree",
+    "file": "model\\decision_tree.joblib",
+    "accuracy": 0.9148936170212766
+  },
+  {
+    "model": "K-Nearest Neighbors",
+    "file": "model\\k_nearest_neighbors.joblib",
+    "accuracy": 0.8250591016548463
+  },
+  {
+    "model": "Gaussian Naive Bayes",
+    "file": "model\\gaussian_naive_bayes.joblib",
+    "accuracy": 0.508274231678487
+  },
+  {
+    "model": "Random Forest",
+    "file": "model\\random_forest.joblib",
+    "accuracy": 0.9408983451536643
+  },
+  {
+    "model": "XGBoost",
+    "file": "model\\xgboost.joblib",
+    "accuracy": 0.9527186761229315
+  }
+]
