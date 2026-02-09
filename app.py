@@ -27,7 +27,7 @@ st.title("Load multiple ML models and run predictions with optional preprocessor
 # --- Configuration / input ---
 models_source = st.text_input(
     "Models directory (local folder) or GitHub repo URL (https://github.com/owner/repo)",
-    value="https://github.com/saiskrishnan/bits_assignment_ml",
+    value="https://github.com/saiskrishnan/bits_assignment_ml/tree/main/model",
 )
 models_dir = models_source
 
