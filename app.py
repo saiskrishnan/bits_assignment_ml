@@ -1,332 +1,368 @@
 import os
 import glob
+import json
 import pickle
 import joblib
-import streamlit as st
 import pandas as pd
-import tempfile
-import subprocess
-
-# New imports for evaluation & plotting
 import numpy as np
-import seaborn as sns
+import streamlit as st
 import matplotlib.pyplot as plt
-from sklearn.metrics import (
-    classification_report,
-    confusion_matrix,
-    accuracy_score,
-    precision_score,
-    recall_score,
-    f1_score,
-    matthews_corrcoef,
-)
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, matthews_corrcoef
+from sklearn.preprocessing import label_binarize
 
-st.set_page_config(page_title="Model Loader + Preprocessor + Label Encoder", layout="wide")
-st.title("Load multiple ML models and run predictions with optional preprocessor/label encoder")
+# streamlit_app.py
+# Streamlit app to select and load a trained model + preprocessing artifacts,
+# run predictions on an uploaded CSV and download results.
+#
+# Place this file in the same directory that contains the saved models folder
+# (./models or ./model). Run with: streamlit run streamlit_app.py
+st.set_page_config(page_title="Obesity Models Predictor", layout="wide")
 
-# --- Configuration / input ---
-models_source = st.text_input(
-    "Models directory (local folder) or GitHub repo URL (https://github.com/owner/repo)",
-    value="https://github.com/saiskrishnan/bits_assignment_ml/tree/main/model",
-)
-models_dir = models_source
+st.title("Obesity-level Prediction — Select & Run Saved Model")
 
-# If a GitHub URL is provided, allow cloning it into a temp directory
-if isinstance(models_source, str) and models_source.startswith("http") and "github.com" in models_source:
-    if st.button("Clone GitHub repo"):
-        tmpdir = tempfile.mkdtemp(prefix="models_repo_")
-        try:
-            subprocess.check_call(["git", "clone", "--depth", "1", models_source, tmpdir])
-            st.success(f"Cloned repo to {tmpdir}")
-            models_dir = tmpdir
-        except Exception as e:
-            st.error(f"Failed to clone repo: {e}")
-            models_dir = models_source
+# Discover saved models and metadata
+def discover_models():
+    # map expected display names to joblib filenames (prefer joblib, fall back to pkl)
+    # auto-detect model directory: prefer 'models', then 'model', then current dir
+    for candidate in ("models", "model", "."):
+        if os.path.isdir(candidate):
+            base_dir = candidate
+            break
+    else:
+        # fallback to "models" if nothing exists (keeps compatibility)
+        base_dir = "models"
+    filename_map = {
+        "Logistic Regression": "logistic_regression.joblib",
+        "Decision Tree": "decision_tree.joblib",
+        "K-Nearest Neighbors": "k_nearest_neighbors.joblib",
+        "Gaussian Naive Bayes": "gaussian_naive_bayes.joblib",
+        "Random Forest": "random_forest.joblib",
+        "XGBoost": "xgboost.joblib",
+    }
 
-allowed_exts = (".joblib", ".pkl", ".sav", ".model")
+    models = {}
+    for name, fname in filename_map.items():
+        # prefer joblib path as listed, but allow .pkl fallback
+        path = os.path.join(base_dir, fname)
+        if os.path.exists(path):
+            models[name] = path
+            continue
+        # try .pkl fallback
+        alt = os.path.join(base_dir, os.path.splitext(fname)[0] + ".pkl")
+        if os.path.exists(alt):
+            models[name] = alt
+            continue
+        # try either extension in the same folder if different naming was used
+        for ext in ("joblib", "pkl"):
+            alt2 = os.path.join(base_dir, f"{os.path.splitext(fname)[0]}.{ext}")
+            if os.path.exists(alt2):
+                models[name] = alt2
+                break
 
-# --- Helpers ---
-def find_files(directory, exts=allowed_exts):
-    if not os.path.isdir(directory):
-        return []
-    files = []
-    for ext in exts:
-        files.extend(glob.glob(os.path.join(directory, f"*{ext}")))
-    return sorted(files)
+    # If none found in the explicit map, fallback to a simple directory scan
+    if not models:
+        for d in ("models", "model", "."):
+            if not os.path.isdir(d):
+                continue
+            for ext in ("joblib", "pkl"):
+                for path in glob.glob(os.path.join(d, f"*.{ext}")):
+                    fname = os.path.splitext(os.path.basename(path))[0]
+                    display_name = fname.replace("_", " ").title()
+                    models[display_name] = path
+        # return whatever discovered by fallback
+        return models
 
-def find_csvs(directory):
-    if not os.path.isdir(directory):
-        return []
-    return sorted(glob.glob(os.path.join(directory, "*.csv")))
+    return models
 
-@st.cache(allow_output_mutation=True)
-def load_artifact(path):
-    """Try joblib.load then fall back to pickle.load. Return exception on failure."""
+models_map = discover_models()
+if not models_map:
+    st.error("No saved models found. Place .pkl/.joblib files under ./models or ./model, or include models_metadata.json.")
+    st.stop()
+
+model_names = sorted(models_map.keys())
+# allow selecting multiple models to compare
+selected_models = st.multiselect("Choose model(s) to run and display confusion matrix", model_names, default=[model_names[0]])
+for name in selected_models:
+    st.markdown(f"- `{name}` -> `{models_map[name]}`")
+
+# Attempt to load preprocessing artifacts (label encoder, preprocessor)
+def load_preprocessor_labelencoder():
+    preprocessor = None
+    label_encoder = None
+    # prefer joblib .joblib or pickle .pkl in both folders
+    candidates = [
+        ("model", "preprocessor.joblib", "label_encoder.joblib"),
+        ("models", "preprocessor.pkl", "label_encoder.pkl"),
+        ("model", "preprocessor.pkl", "label_encoder.pkl"),
+        ("models", "preprocessor.joblib", "label_encoder.joblib"),
+    ]
+    for d, pre_f, lab_f in candidates:
+        pre_path = os.path.join(d, pre_f)
+        lab_path = os.path.join(d, lab_f)
+        if os.path.exists(pre_path):
+            try:
+                if pre_path.endswith(".joblib"):
+                    preprocessor = joblib.load(pre_path)
+                else:
+                    with open(pre_path, "rb") as f:
+                        preprocessor = pickle.load(f)
+            except Exception:
+                preprocessor = None
+        if os.path.exists(lab_path):
+            try:
+                if lab_path.endswith(".joblib"):
+                    label_encoder = joblib.load(lab_path)
+                else:
+                    with open(lab_path, "rb") as f:
+                        label_encoder = pickle.load(f)
+            except Exception:
+                label_encoder = None
+        if preprocessor is not None or label_encoder is not None:
+            # return whatever found (could be one of them)
+            return preprocessor, label_encoder
+    return None, None
+
+preprocessor, label_encoder = load_preprocessor_labelencoder()
+if preprocessor is not None:
+    st.success("Preprocessor loaded.")
+else:
+    st.info("Preprocessor not found (predictions will expect already preprocessed features).")
+
+if label_encoder is not None:
+    st.success("Label encoder loaded.")
+else:
+    st.info("Label encoder not found (predictions will output encoded labels if classifier uses integer labels).")
+
+# Load selected model helper
+@st.cache_resource
+def load_model(path: str):
+    if path.endswith(".joblib"):
+        return joblib.load(path)
+    # try joblib anyway (some files may be joblib but named .pkl)
     try:
         return joblib.load(path)
     except Exception:
-        try:
-            with open(path, "rb") as f:
-                return pickle.load(f)
-        except Exception as e:
-            return e
+        with open(path, "rb") as f:
+            return pickle.load(f)
 
-# --- Discover artifacts ---
-all_files = find_files(models_dir)
-if not all_files:
-    st.warning("No model/artifact files found in the specified directory. Place model/artifact files there or clone a repo.")
-    st.stop()
-
-# Prefer explicit filenames for preprocessor/label_encoder if present
-preproc_path = None
-labelenc_path = None
-for p in all_files:
-    name = os.path.basename(p).lower()
-    if name in ("preprocessor.pkl", "preprocessor.joblib", "preprocessor.sav"):
-        preproc_path = p
-    if name in ("label_encoder.pkl", "labelencoder.pkl", "label_encoder.joblib"):
-        labelenc_path = p
-
-# Sidebar summary
-st.sidebar.header("Detected files")
-st.sidebar.write(os.path.basename(preproc_path) if preproc_path else "No preprocessor detected")
-st.sidebar.write(os.path.basename(labelenc_path) if labelenc_path else "No label encoder detected")
-
-# Build model list: exclude obvious artifacts
-artifact_names = {os.path.basename(preproc_path) if preproc_path else None,
-                  os.path.basename(labelenc_path) if labelenc_path else None}
-model_files = [p for p in all_files if os.path.basename(p) not in artifact_names]
-
-if not model_files:
-    st.warning("No model files found (only artifacts detected). Place model files (*.joblib, *.pkl, *.sav) in the folder.")
-    st.stop()
-
-# Map display names -> paths
-display_names = [os.path.basename(p) for p in model_files]
-selection = st.selectbox("Select a model", options=display_names)
-selected_path = model_files[display_names.index(selection)]
-st.write("Model path:", selected_path)
-
-# Load artifacts (cached)
-preprocessor = None
-label_encoder = None
-
-if preproc_path:
-    preprocessor_or_err = load_artifact(preproc_path)
-    if isinstance(preprocessor_or_err, Exception):
-        st.error(f"Failed to load preprocessor: {preprocessor_or_err}")
-    else:
-        preprocessor = preprocessor_or_err
-        st.success(f"Loaded preprocessor: {os.path.basename(preproc_path)}")
-
-if labelenc_path:
-    labelenc_or_err = load_artifact(labelenc_path)
-    if isinstance(labelenc_or_err, Exception):
-        st.error(f"Failed to load label encoder: {labelenc_or_err}")
-    else:
-        label_encoder = labelenc_or_err
-        st.success(f"Loaded label encoder: {os.path.basename(labelenc_path)}")
-
-# Load selected model
-model_or_err = load_artifact(selected_path)
-if isinstance(model_or_err, Exception):
-    st.error(f"Failed to load model: {model_or_err}")
-    st.stop()
-
-model = model_or_err
-st.write("Model type:", type(model))
-
-# show params if available
-if hasattr(model, "get_params"):
-    try:
-        params = model.get_params()
-        st.expander("Model parameters (get_params)")(st.json(params))
-    except Exception:
-        pass
-
-# --- Dataset selection UI ---
-st.header("Dataset for prediction & evaluation")
-
-data_source = st.radio("Choose dataset source", options=["Upload CSV", "Use CSV in repo/folder"], index=0)
-
-input_df = None
-selected_csv_path = None
-
-if data_source == "Upload CSV":
-    uploaded_file = st.file_uploader("Upload CSV file with features (rows = samples). If available include target column 'NObeyesdad' for evaluation.", type=["csv"])
-    if uploaded_file is not None:
-        try:
-            uploaded_file.seek(0)
-            input_df = pd.read_csv(uploaded_file)
-            st.write("Preview of uploaded data:")
-            st.dataframe(input_df.head())
-        except Exception as e:
-            st.error(f"Could not read uploaded CSV: {e}")
-            st.stop()
-else:
-    # list csv files in the selected models_dir (repo clone or local folder)
-    csv_files = find_csvs(models_dir)
-    if not csv_files:
-        st.info("No CSV files detected in the selected directory/repo. You can upload a CSV instead.")
-    else:
-        csv_display = [os.path.basename(p) for p in csv_files]
-        csv_choice = st.selectbox("Select CSV from repo/folder", options=csv_display)
-        selected_csv_path = csv_files[csv_display.index(csv_choice)]
-        if st.button("Load selected CSV"):
+# Show basic metadata if present in models_metadata.json
+def read_metadata_for(path):
+    for meta_dir in ("models", "model"):
+        meta_path = os.path.join(meta_dir, "models_metadata.json")
+        if os.path.exists(meta_path):
             try:
-                input_df = pd.read_csv(selected_csv_path)
-                st.success(f"Loaded {selected_csv_path}")
-                st.dataframe(input_df.head())
-            except Exception as e:
-                st.error(f"Failed to load CSV: {e}")
-                st.stop()
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    entries = json.load(f)
+                for e in entries:
+                    if os.path.normpath(e.get("file", "")) == os.path.normpath(path) or os.path.basename(e.get("file","")) == os.path.basename(path):
+                        return e
+            except Exception:
+                pass
+    return None
 
-# allow user to specify target column name (default NObeyesdad)
-target_column = st.text_input("Target column name (for evaluation)", value="NObeyesdad")
+# Input: upload CSV of raw features (same columns used for training) or paste a JSON row
+st.subheader("Input data")
+uploaded = st.file_uploader(
+    "Upload CSV (rows of feature columns). If no preprocessor found, upload already preprocessed feature columns.",
+    type=["csv"],
+)
+single_text = st.text_area(
+    "Or paste a single JSON/dict row (feature_name: value). Leave empty if uploading CSV.",
+    height=120,
+)
 
-# --- Prediction & Evaluation UI ---
-if input_df is None:
-    st.info("Provide a dataset (upload or choose from folder) to enable predictions and evaluation.")
+# Option: load the example test_set.csv from the GitHub repo
+sample_url = "https://raw.githubusercontent.com/saiskrishnan/bits_assignment_ml/main/test_set.csv"
+if st.checkbox("Use sample test_set.csv from GitHub (saiskrishnan/bits_assignment_ml)"):
+    uploaded = sample_url
+    st.caption(f"Using remote CSV: {sample_url}")
+
+df_input = None
+if uploaded is not None:
+    try:
+        df_input = pd.read_csv(uploaded)
+    except Exception as e:
+        st.error(f"Failed to read CSV: {e}")
+elif single_text:
+    try:
+        obj = json.loads(single_text)
+        if isinstance(obj, dict):
+            df_input = pd.DataFrame([obj])
+        elif isinstance(obj, list):
+            df_input = pd.DataFrame(obj)
+        else:
+            st.error("JSON must be an object or array of objects.")
+    except Exception as e:
+        st.error(f"Failed to parse JSON: {e}")
+
+if df_input is None:
+    st.info("Upload a CSV or paste JSON to run predictions.")
 else:
-    st.header("Make predictions & view evaluation")
-    st.write(f"Rows: {len(input_df)}, Columns: {len(input_df.columns)}")
-    if st.button("Run prediction and evaluation"):
-        try:
-            X = input_df.copy()
+    st.write("Input preview:")
+    st.dataframe(df_input.head())
 
-            # Prepare features for model: drop target column if present
-            if target_column in X.columns:
-                X_features = X.drop(columns=[target_column])
-            else:
-                X_features = X
+    # Allow user to specify ground-truth column if present in uploaded CSV
+    gt_col = st.text_input("Ground-truth column name in uploaded CSV (optional)", value="")
 
-            # Preprocess if available
-            X_for_model = X_features
-            if preprocessor is not None:
-                if hasattr(preprocessor, "transform"):
-                    try:
-                        X_for_model = preprocessor.transform(X_features)
-                    except Exception as e:
-                        st.error(f"Preprocessor.transform failed: {e}")
-                        st.stop()
-                else:
-                    st.warning("Loaded preprocessor does not have a transform method. Passing raw features to model.")
+    # Preprocess if preprocessor available
+    X = df_input.copy()
+    try:
+        if preprocessor is not None:
+            # preprocessor.transform expects the original feature columns used at training
+            X_proc = preprocessor.transform(X)
+            # if returned sparse matrix-like, convert to array
+            if hasattr(X_proc, "toarray"):
+                X_proc = X_proc.toarray()
+            X_for_model = X_proc
+        else:
+            # assume uploaded data is already processed and numeric
+            X_for_model = X.values
+    except Exception as e:
+        st.error(f"Preprocessing failed: {e}")
+        st.stop()
 
-            # Predict
-            preds = model.predict(X_for_model)
-
-            # If label encoder present, try inverse transform
-            decoded_preds = None
-            if label_encoder is not None and hasattr(label_encoder, "inverse_transform"):
+    # If no models selected, nothing to do
+    if not selected_models:
+        st.info("Choose at least one model to run predictions and display confusion matrix.")
+    else:
+        # iterate selected models and display confusion matrix (requires ground-truth)
+        for model_name in selected_models:
+            model_path = models_map[model_name]
+            with st.spinner(f"Loading model {model_name}..."):
                 try:
-                    decoded_preds = label_encoder.inverse_transform(preds)
-                except Exception:
-                    decoded_preds = None
+                    model = load_model(model_path)
+                except Exception as e:
+                    st.error(f"Failed to load model {model_name}: {e}")
+                    continue
 
-            out = pd.DataFrame({"prediction": preds})
-            if decoded_preds is not None:
-                out["prediction_label"] = decoded_preds
+            st.write("Model:", model_name, "->", os.path.basename(model_path))
+            # run prediction
+            try:
+                y_pred_encoded = model.predict(X_for_model)
+            except Exception as e:
+                st.error(f"Model prediction failed for {model_name}: {e}")
+                continue
 
-            # probabilities if available
-            if hasattr(model, "predict_proba"):
-                try:
-                    proba = model.predict_proba(X_for_model)
-                    proba_df = pd.DataFrame(proba, columns=[f"proba_{i}" for i in range(proba.shape[1])])
-                    out = pd.concat([out.reset_index(drop=True), proba_df.reset_index(drop=True)], axis=1)
-                except Exception:
-                    pass
-
-            result = pd.concat([X.reset_index(drop=True), out.reset_index(drop=True)], axis=1)
-
-            # Display and offer download (remove any prediction columns from original if present)
-            pred_cols_to_remove = [c for c in result.columns if str(c).lower().startswith("pred_") and c not in ("prediction", "prediction_label")]
-            if pred_cols_to_remove:
-                result = result.drop(columns=pred_cols_to_remove, errors="ignore")
-
-            st.success("Prediction complete")
-            st.dataframe(result.head(200))
-
-            csv_bytes = result.to_csv(index=False).encode("utf-8")
-            st.download_button("Download predictions CSV", data=csv_bytes, file_name="predictions.csv", mime="text/csv")
-
-            # --- Evaluation (if target available) ---
-            if target_column in input_df.columns:
-                # create y_true and y_pred labels for comparison
-                y_true = input_df[target_column].values
-
-                # Choose comparable y_pred labels
-                if decoded_preds is not None:
-                    y_pred_labels = decoded_preds
+            # decode labels if possible
+            try:
+                if label_encoder is not None and hasattr(label_encoder, "inverse_transform") and np.issubdtype(np.array(y_pred_encoded).dtype, np.integer):
+                    y_pred = label_encoder.inverse_transform(np.array(y_pred_encoded, dtype=int))
                 else:
-                    # if y_true are strings and preds numeric and label_encoder present, attempt inverse transform
-                    if label_encoder is not None and input_df[target_column].dtype == object:
-                        try:
-                            y_pred_labels = label_encoder.inverse_transform(preds)
-                        except Exception:
-                            y_pred_labels = preds
+                    # if model outputs indexes and has classes_, map them
+                    if np.issubdtype(np.array(y_pred_encoded).dtype, np.integer) and hasattr(model, "classes_"):
+                        classes_arr = np.array(model.classes_)
+                        y_pred = classes_arr[np.array(y_pred_encoded, dtype=int)]
                     else:
-                        y_pred_labels = preds
+                        y_pred = np.array(y_pred_encoded)
+            except Exception:
+                y_pred = np.array(y_pred_encoded)
 
-                # If y_true are encoded numbers while y_pred are labels, try to map y_true via label_encoder
-                y_true_labels = y_true
+            st.write("Predictions preview:")
+            st.dataframe(pd.DataFrame({"prediction": y_pred}).head())
+
+            # If ground-truth provided and present, compute and show confusion matrix + metrics
+            if gt_col and gt_col in df_input.columns:
+                y_true = df_input[gt_col].values
+                # decide labels ordering
+                if label_encoder is not None and hasattr(label_encoder, "classes_"):
+                    labels = list(label_encoder.classes_)
+                elif hasattr(model, "classes_"):
+                    labels = list(np.array(model.classes_, dtype=object))
+                else:
+                    labels = list(np.unique(np.concatenate([y_true, y_pred]).astype(object)))
+                # ensure labels include all present in y_true and y_pred
+                labels = list(dict.fromkeys(list(labels) + list(np.unique(np.concatenate([y_true, y_pred]).astype(object)))))
+
                 try:
-                    # if y_true numeric but label_encoder exists and preds are decoded strings -> convert y_true to strings
-                    if label_encoder is not None and np.issubdtype(y_true.dtype, np.number) and (decoded_preds is not None):
-                        y_true_labels = label_encoder.inverse_transform(y_true.astype(int))
-                except Exception:
-                    y_true_labels = y_true
-
-                # Compute metrics (robust to label types)
-                acc = accuracy_score(y_true_labels, y_pred_labels)
-                prec = precision_score(y_true_labels, y_pred_labels, average="macro", zero_division=0)
-                rec = recall_score(y_true_labels, y_pred_labels, average="macro", zero_division=0)
-                f1 = f1_score(y_true_labels, y_pred_labels, average="macro", zero_division=0)
-                try:
-                    mcc = matthews_corrcoef(y_true_labels, y_pred_labels)
-                except Exception:
-                    mcc = None
-
-                st.subheader("Evaluation metrics (on provided target column)")
-                metrics_df = pd.DataFrame(
-                    [
-                        {
-                            "accuracy": acc,
-                            "precision_macro": prec,
-                            "recall_macro": rec,
-                            "f1_macro": f1,
-                            "mcc": mcc,
-                        }
-                    ]
-                )
-                st.table(metrics_df.T.rename(columns={0: "value"}))
-
-                # Classification report
-                st.subheader("Classification report")
-                try:
-                    crep = classification_report(y_true_labels, y_pred_labels, output_dict=True, zero_division=0)
-                    crep_df = pd.DataFrame(crep).T
-                    # pretty rounding
-                    for c in ("precision", "recall", "f1-score", "support"):
-                        if c in crep_df.columns:
-                            crep_df[c] = crep_df[c].apply(lambda v: round(float(v), 4) if pd.notna(v) else v)
-                    st.dataframe(crep_df)
+                    cm = confusion_matrix(y_true, y_pred, labels=labels)
                 except Exception as e:
-                    st.text("Could not compute classification report: " + str(e))
+                    st.error(f"Failed to compute confusion matrix for {model_name}: {e}")
+                    continue
 
-                # Confusion matrix plot
-                st.subheader("Confusion matrix")
+                # compute additional metrics
                 try:
-                    labels = np.unique(np.concatenate([y_true_labels, y_pred_labels]).astype(str))
-                    cm = confusion_matrix(y_true_labels, y_pred_labels, labels=labels)
-                    fig, ax = plt.subplots(figsize=(6, 5))
-                    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=labels, yticklabels=labels, ax=ax)
-                    ax.set_xlabel("Predicted")
-                    ax.set_ylabel("True")
-                    ax.set_title("Confusion matrix")
-                    st.pyplot(fig)
+
+                    accuracy = accuracy_score(y_true, y_pred)
+                    precision = precision_score(y_true, y_pred, average="macro", zero_division=0)
+                    recall = recall_score(y_true, y_pred, average="macro", zero_division=0)
+                    f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
+                    mcc = matthews_corrcoef(y_true, y_pred)
+
+                    # try to get proper probability scores for AUC, fall back to binarized predicted labels
+                    auc = None
+                    try:
+                        if hasattr(model, "predict_proba"):
+                            y_score = model.predict_proba(X_for_model)
+                        elif hasattr(model, "decision_function"):
+                            y_score = model.decision_function(X_for_model)
+                            # decision_function for multiclass may return shape (n_samples, n_classes)
+                        else:
+                            # fallback to one-hot encoded predicted labels (not ideal but acceptable)
+                            y_score = label_binarize(y_pred, classes=labels)
+
+                        y_true_bin = label_binarize(y_true, classes=labels)
+                        # roc_auc_score requires at least two classes in y_true_bin
+                        if y_true_bin.shape[1] >= 2:
+                            auc = roc_auc_score(y_true_bin, y_score, average="macro", multi_class="ovr")
+                    except Exception:
+                        auc = None
                 except Exception as e:
-                    st.text("Could not compute/plot confusion matrix: " + str(e))
+                    st.error(f"Failed to compute metrics for {model_name}: {e}")
+                    accuracy = precision = recall = f1 = mcc = auc = None
+
+                # show confusion matrix plot
+                fig, ax = plt.subplots(figsize=(7, 6))
+                im = ax.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
+                ax.set_title(f"Confusion matrix — {model_name}")
+                tick_marks = np.arange(len(labels))
+                ax.set_xticks(tick_marks)
+                ax.set_yticks(tick_marks)
+                ax.set_xticklabels(labels, rotation=45, ha='right')
+                ax.set_yticklabels(labels)
+                thresh = cm.max() / 2. if cm.max() != 0 else 0
+                for i in range(cm.shape[0]):
+                    for j in range(cm.shape[1]):
+                        ax.text(j, i, format(cm[i, j], 'd'),
+                                ha="center", va="center",
+                                color="white" if cm[i, j] > thresh else "black")
+                fig.colorbar(im, ax=ax)
+                fig.tight_layout()
+                st.pyplot(fig)
+
+                # display raw matrix and simple metrics
+                cm_df = pd.DataFrame(cm, index=labels, columns=labels)
+                st.write("Confusion matrix (counts):")
+                st.dataframe(cm_df)
+
+                # display the computed metrics
+                metrics = {
+                    "accuracy": accuracy,
+                    "precision (macro)": precision,
+                    "recall (macro)": recall,
+                    "f1 (macro)": f1,
+                    "mcc": mcc,
+                    "auc (ovr, macro)": auc if auc is not None else "N/A"
+                }
+                # format numeric metrics
+                metrics_fmt = {k: (round(v, 4) if isinstance(v, (float, np.floating)) else v) for k, v in metrics.items()}
+                st.write("Metrics:")
+                st.dataframe(pd.DataFrame.from_dict(metrics_fmt, orient="index", columns=["value"]))
             else:
-                st.info(f"Target column '{target_column}' not found in dataset — evaluation skipped. Include '{target_column}' for evaluation.")
-        except Exception as e:
-            st.error(f"Prediction/evaluation failed: {e}")
+                st.info(f"No ground-truth column provided or column '{gt_col}' not found. Provide ground-truth to view confusion matrix and metrics.")
+                # show prediction class counts
+                vals = pd.Series(y_pred).value_counts().rename_axis("class").reset_index(name="count")
+                st.write("Prediction class distribution:")
+                st.dataframe(vals)
+
+            # allow download predictions for this model
+            result_df = df_input.reset_index(drop=True).copy()
+            result_df["prediction"] = y_pred
+            csv = result_df.to_csv(index=False).encode("utf-8")
+            st.download_button(f"Download predictions (CSV) for {model_name}", data=csv, file_name=f"predictions_{model_name.replace(' ','_')}.csv", mime="text/csv")
+
+            # allow download predictions for this model
+            result_df = df_input.reset_index(drop=True).copy()
+            result_df["prediction"] = y_pred
+            csv = result_df.to_csv(index=False).encode("utf-8")
+            st.download_button(f"Download predictions (CSV) for {model_name}", data=csv, file_name=f"predictions_{model_name.replace(' ','_')}.csv", mime="text/csv")
