@@ -19,7 +19,7 @@ from sklearn.preprocessing import label_binarize
 # (./models or ./model). Run with: streamlit run streamlit_app.py
 st.set_page_config(page_title="Obesity Models Predictor", layout="wide")
 
-st.title("Obesity-level Prediction — Select & Run Saved Model")
+st.title("Obesity-level Prediction — Select & Run Model")
 
 # Discover saved models and metadata
 def discover_models():
@@ -81,10 +81,14 @@ if not models_map:
     st.stop()
 
 model_names = sorted(models_map.keys())
-# allow selecting multiple models to compare
-selected_models = st.multiselect("Choose model(s) to run and display confusion matrix", model_names, default=[model_names[0]])
-for name in selected_models:
-    st.markdown(f"- `{name}` -> `{models_map[name]}`")
+# single-choice radio to pick one model
+if not model_names:
+    st.error("No models available.")
+    selected_models = []
+else:
+    selected = st.radio("Choose a model to run and display confusion matrix", model_names, index=0)
+    selected_models = [selected]
+    st.markdown(f"- `{selected}`")
 
 # Attempt to load preprocessing artifacts (label encoder, preprocessor)
 def load_preprocessor_labelencoder():
@@ -163,20 +167,24 @@ def read_metadata_for(path):
 
 # Input: upload CSV of raw features (same columns used for training) or paste a JSON row
 st.subheader("Input data")
+
+# Default sample test set (used when user does not upload a file or paste JSON)
+sample_url = "https://raw.githubusercontent.com/saiskrishnan/bits_assignment_ml/main/test_set.csv"
+
 uploaded = st.file_uploader(
     "Upload CSV (rows of feature columns). If no preprocessor found, upload already preprocessed feature columns.",
     type=["csv"],
 )
+
 single_text = st.text_area(
     "Or paste a single JSON/dict row (feature_name: value). Leave empty if uploading CSV.",
     height=120,
 )
 
-# Option: load the example test_set.csv from the GitHub repo
-sample_url = "https://raw.githubusercontent.com/saiskrishnan/bits_assignment_ml/main/test_set.csv"
-if st.checkbox("Use sample test_set.csv from GitHub (saiskrishnan/bits_assignment_ml)"):
+# Use the sample test_set.csv by default when no upload and no pasted JSON provided
+if uploaded is None and not single_text:
     uploaded = sample_url
-    st.caption(f"Using remote CSV: {sample_url}")
+    st.caption(f"Using default sample CSV: {sample_url}")
 
 df_input = None
 if uploaded is not None:
@@ -203,7 +211,7 @@ else:
     st.dataframe(df_input.head())
 
     # Allow user to specify ground-truth column if present in uploaded CSV
-    gt_col = st.text_input("Ground-truth column name in uploaded CSV (optional)", value="")
+    gt_col = st.text_input("TARGET column name in uploaded CSV (optional)", value="NObeyesdad")
 
     # Preprocess if preprocessor available
     X = df_input.copy()
@@ -258,8 +266,6 @@ else:
             except Exception:
                 y_pred = np.array(y_pred_encoded)
 
-            st.write("Predictions preview:")
-            st.dataframe(pd.DataFrame({"prediction": y_pred}).head())
 
             # If ground-truth provided and present, compute and show confusion matrix + metrics
             if gt_col and gt_col in df_input.columns:
@@ -335,19 +341,39 @@ else:
                 st.write("Confusion matrix (counts):")
                 st.dataframe(cm_df)
 
-                # display the computed metrics
+                # display the computed metrics in a fixed sidebar column so they update
                 metrics = {
                     "accuracy": accuracy,
                     "precision (macro)": precision,
                     "recall (macro)": recall,
                     "f1 (macro)": f1,
                     "mcc": mcc,
-                    "auc (ovr, macro)": auc if auc is not None else "N/A"
+                    "auc (ovr, macro)": auc if auc is not None else None
                 }
+
                 # format numeric metrics
-                metrics_fmt = {k: (round(v, 4) if isinstance(v, (float, np.floating)) else v) for k, v in metrics.items()}
-                st.write("Metrics:")
-                st.dataframe(pd.DataFrame.from_dict(metrics_fmt, orient="index", columns=["value"]))
+                def _fmt(v):
+                    if v is None:
+                        return "N/A"
+                    try:
+                        if isinstance(v, (float, np.floating)):
+                            return round(float(v), 4)
+                        return v
+                    except Exception:
+                        return v
+
+                metrics_fmt = {k: _fmt(v) for k, v in metrics.items()}
+
+                # write metrics to a fixed sidebar panel so they persist and update when model changes
+                metrics_panel = st.sidebar.container()
+                metrics_panel.header("Model metrics")
+                metrics_panel.subheader(model_name)
+                metrics_df = pd.DataFrame.from_dict(metrics_fmt, orient="index", columns=["value"])
+                metrics_panel.dataframe(metrics_df)
+
+                # also show a compact summary under the confusion matrix for convenience
+                st.write("Metrics (summary):")
+                st.table(metrics_df)
             else:
                 st.info(f"No ground-truth column provided or column '{gt_col}' not found. Provide ground-truth to view confusion matrix and metrics.")
                 # show prediction class counts
@@ -355,14 +381,20 @@ else:
                 st.write("Prediction class distribution:")
                 st.dataframe(vals)
 
-            # allow download predictions for this model
-            result_df = df_input.reset_index(drop=True).copy()
-            result_df["prediction"] = y_pred
-            csv = result_df.to_csv(index=False).encode("utf-8")
-            st.download_button(f"Download predictions (CSV) for {model_name}", data=csv, file_name=f"predictions_{model_name.replace(' ','_')}.csv", mime="text/csv")
-
-            # allow download predictions for this model
-            result_df = df_input.reset_index(drop=True).copy()
-            result_df["prediction"] = y_pred
-            csv = result_df.to_csv(index=False).encode("utf-8")
-            st.download_button(f"Download predictions (CSV) for {model_name}", data=csv, file_name=f"predictions_{model_name.replace(' ','_')}.csv", mime="text/csv")
+            # allow download of the input CSV (e.g., the sample test_set.csv)
+            try:
+                input_csv = df_input.to_csv(index=False).encode("utf-8")
+                if isinstance(uploaded, str) and uploaded == sample_url:
+                    input_fname = "test_set.csv"
+                elif hasattr(uploaded, "name"):
+                    input_fname = uploaded.name
+                else:
+                    input_fname = "input.csv"
+                st.download_button(
+                    f"Download input CSV ({input_fname})",
+                    data=input_csv,
+                    file_name=input_fname,
+                    mime="text/csv",
+                )
+            except Exception:
+                pass
