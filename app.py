@@ -81,14 +81,14 @@ if not models_map:
     st.stop()
 
 model_names = sorted(models_map.keys())
-# single-choice radio to pick one model
 if not model_names:
-    st.error("No models available.")
+    st.sidebar.error("No models available.")
     selected_models = []
 else:
-    selected = st.radio("Choose a model to run and display confusion matrix", model_names, index=0)
+    st.sidebar.header("Model selection")
+    selected = st.sidebar.radio("Choose a model to run and display confusion matrix", model_names, index=0)
+    st.sidebar.markdown(f"- `{selected}`")
     selected_models = [selected]
-    st.markdown(f"- `{selected}`")
 
 # Attempt to load preprocessing artifacts (label encoder, preprocessor)
 def load_preprocessor_labelencoder():
@@ -166,17 +166,17 @@ def read_metadata_for(path):
     return None
 
 # Input: upload CSV of raw features (same columns used for training) or paste a JSON row
-st.subheader("Input data")
+st.sidebar.subheader("Input data")
 
 # Default sample test set (used when user does not upload a file or paste JSON)
 sample_url = "https://raw.githubusercontent.com/saiskrishnan/bits_assignment_ml/main/test_set.csv"
 
-uploaded = st.file_uploader(
+uploaded = st.sidebar.file_uploader(
     "Upload CSV (rows of feature columns). If no preprocessor found, upload already preprocessed feature columns.",
     type=["csv"],
 )
 
-single_text = st.text_area(
+single_text = st.sidebar.text_area(
     "Or paste a single JSON/dict row (feature_name: value). Leave empty if uploading CSV.",
     height=120,
 )
@@ -381,7 +381,7 @@ else:
                 st.write("Prediction class distribution:")
                 st.dataframe(vals)
 
-            # allow download of the input CSV (e.g., the sample test_set.csv)
+            # allow download of the input CSV (placed in the fixed sidebar panel when available)
             try:
                 input_csv = df_input.to_csv(index=False).encode("utf-8")
                 if isinstance(uploaded, str) and uploaded == sample_url:
@@ -390,7 +390,11 @@ else:
                     input_fname = uploaded.name
                 else:
                     input_fname = "input.csv"
-                st.download_button(
+
+                # prefer adding the button to the existing metrics_panel (fixed sidebar) if present,
+                # otherwise fall back to st.sidebar
+                target_sidebar = metrics_panel if "metrics_panel" in locals() else st.sidebar
+                target_sidebar.download_button(
                     f"Download input CSV ({input_fname})",
                     data=input_csv,
                     file_name=input_fname,
