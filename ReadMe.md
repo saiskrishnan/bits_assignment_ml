@@ -12,7 +12,7 @@ Obesity is a major public health concern influenced by eating habits, physical a
 * **Dataset Name:** Estimation of Obesity Levels Based on Eating Habits and Physical Condition
 * **Source:** UCI Machine Learning Repository
 * **Number of Instances:** 2111
-* **Number of Features:** 17
+* **Number of Features:** 16
 * **Target Variable:** `NObesity` (7 obesity categories)
 
 ### Obesity Classes / categories
