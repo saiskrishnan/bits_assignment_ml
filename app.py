@@ -129,12 +129,14 @@ def load_preprocessor_labelencoder():
 
 preprocessor, label_encoder = load_preprocessor_labelencoder()
 if preprocessor is not None:
-    st.success("Preprocessor loaded.")
+    # don't display a success message when preprocessor is found
+    pass
 else:
     st.info("Preprocessor not found (predictions will expect already preprocessed features).")
 
 if label_encoder is not None:
-    st.success("Label encoder loaded.")
+    # don't display a success message when label encoder is found
+    pass
 else:
     st.info("Label encoder not found (predictions will output encoded labels if classifier uses integer labels).")
 
@@ -165,21 +167,20 @@ def read_metadata_for(path):
                 pass
     return None
 
-# Input: upload CSV of raw features (same columns used for training) or paste a JSON row
-st.sidebar.subheader("Input data")
+# Reserve slots so the input controls can be rendered later (at the end of the sidebar)
+input_subheader_slot = st.sidebar.empty()
+uploader_slot = st.sidebar.empty()
+text_slot = st.sidebar.empty()
 
 # Default sample test set (used when user does not upload a file or paste JSON)
 sample_url = "https://raw.githubusercontent.com/saiskrishnan/bits_assignment_ml/main/test_set.csv"
 
-uploaded = st.sidebar.file_uploader(
-    "Upload CSV (rows of feature columns). If no preprocessor found, upload already preprocessed feature columns.",
-    type=["csv"],
-)
+# Initialize variables; they will be assigned when the widgets are rendered at the end
+uploaded = None
+single_text = None
+# Helper to render the input widgets into the reserved slots (call this at the end of the script)
 
-single_text = st.sidebar.text_area(
-    "Or paste a single JSON/dict row (feature_name: value). Leave empty if uploading CSV.",
-    height=120,
-)
+
 
 # Use the sample test_set.csv by default when no upload and no pasted JSON provided
 if uploaded is None and not single_text:
@@ -210,8 +211,9 @@ else:
     st.write("Input preview:")
     st.dataframe(df_input.head())
 
-    # Allow user to specify ground-truth column if present in uploaded CSV
-    gt_col = st.text_input("TARGET column name in uploaded CSV (optional)", value="NObeyesdad")
+    # Target column is fixed to "NObeyesdad"
+    gt_col = "NObeyesdad"
+    st.sidebar.markdown(f"Target column : `{gt_col}`")
 
     # Preprocess if preprocessor available
     X = df_input.copy()
@@ -365,11 +367,12 @@ else:
                 metrics_fmt = {k: _fmt(v) for k, v in metrics.items()}
 
                 # write metrics to a fixed sidebar panel so they persist and update when model changes
-                metrics_panel = st.sidebar.container()
-                metrics_panel.header("Model metrics")
-                metrics_panel.subheader(model_name)
+                # use a different variable name so downstream logic doesn't treat it as the download target
+                metrics_container = st.sidebar.container()
+                metrics_container.header("Model metrics")
+                metrics_container.subheader(model_name)
                 metrics_df = pd.DataFrame.from_dict(metrics_fmt, orient="index", columns=["value"])
-                metrics_panel.dataframe(metrics_df)
+                metrics_container.dataframe(metrics_df)
 
                 # also show a compact summary under the confusion matrix for convenience
                 st.write("Metrics (summary):")
@@ -393,12 +396,28 @@ else:
 
                 # prefer adding the button to the existing metrics_panel (fixed sidebar) if present,
                 # otherwise fall back to st.sidebar
-                target_sidebar = metrics_panel if "metrics_panel" in locals() else st.sidebar
+                target_sidebar = metrics_container if "metrics_container" in locals() else st.sidebar
                 target_sidebar.download_button(
                     f"Download input CSV ({input_fname})",
                     data=input_csv,
                     file_name=input_fname,
                     mime="text/csv",
                 )
+
+                # render the reserved input widgets so they appear after the metrics container/sidebar block
+                def render_input_widgets():
+                    global uploaded, single_text
+                    input_subheader_slot.subheader("Input data")
+                    uploaded = uploader_slot.file_uploader(
+                        "Upload CSV (rows of feature columns). If no preprocessor found, upload already preprocessed feature columns.",
+                        type=["csv"],
+                    )
+                    single_text = text_slot.text_area(
+                        "Or paste a single JSON/dict row (feature_name: value). Leave empty if uploading CSV.",
+                        height=120,
+                    )
+
+                # call the function to actually render the widgets
+                render_input_widgets()
             except Exception:
                 pass
