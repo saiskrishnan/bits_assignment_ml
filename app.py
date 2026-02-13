@@ -90,6 +90,19 @@ else:
     st.sidebar.markdown(f"- `{selected}`")
     selected_models = [selected]
 
+# render the reserved input widgets so they appear after the metrics container/sidebar block
+def render_input_widgets():
+    global uploaded, single_text
+    input_subheader_slot.subheader("Input data")
+    uploaded = uploader_slot.file_uploader(
+        "Upload CSV (rows of feature columns). If no preprocessor found, upload already preprocessed feature columns.",
+        type=["csv"],
+    )
+    single_text = text_slot.text_area(
+        "Or paste a single JSON/dict row (feature_name: value). Leave empty if uploading CSV.",
+        height=120,
+    )
+
 # Attempt to load preprocessing artifacts (label encoder, preprocessor)
 def load_preprocessor_labelencoder():
     preprocessor = None
@@ -403,19 +416,6 @@ else:
                     file_name=input_fname,
                     mime="text/csv",
                 )
-
-                # render the reserved input widgets so they appear after the metrics container/sidebar block
-                def render_input_widgets():
-                    global uploaded, single_text
-                    input_subheader_slot.subheader("Input data")
-                    uploaded = uploader_slot.file_uploader(
-                        "Upload CSV (rows of feature columns). If no preprocessor found, upload already preprocessed feature columns.",
-                        type=["csv"],
-                    )
-                    single_text = text_slot.text_area(
-                        "Or paste a single JSON/dict row (feature_name: value). Leave empty if uploading CSV.",
-                        height=120,
-                    )
 
                 # call the function to actually render the widgets
                 render_input_widgets()
