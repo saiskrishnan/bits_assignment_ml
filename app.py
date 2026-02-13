@@ -185,6 +185,9 @@ input_subheader_slot = st.sidebar.empty()
 uploader_slot = st.sidebar.empty()
 text_slot = st.sidebar.empty()
 
+# uploaded CSV takes precedence over the default sample URL.
+render_input_widgets()
+
 # Default sample test set (used when user does not upload a file or paste JSON)
 sample_url = "https://raw.githubusercontent.com/saiskrishnan/bits_assignment_ml/main/test_set.csv"
 
@@ -416,8 +419,6 @@ else:
                     file_name=input_fname,
                     mime="text/csv",
                 )
-
-                # call the function to actually render the widgets
-                render_input_widgets()
+               
             except Exception:
                 pass
